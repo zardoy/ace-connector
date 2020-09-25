@@ -1,0 +1,19 @@
+{
+  "name": "ace-connector",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "repository": "git@github.com:zardoy/ace-connector.git",
+  "author": "Vitaly Turovsky <vital2580@icloud.com>",
+  "license": "MIT",
+  "private": true,
+  "dependencies": {
+    "axios": "^0.20.0",
+    "stdcp": "^2.0.0",
+    "systeminformation": "^4.27.5",
+    "winreg": "^1.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^14.11.1",
+    "@types/winreg": "^1.2.30"
+  }
+}
