@@ -14,7 +14,7 @@
     "winreg": "^1.2.4"
   },
   "devDependencies": {
-    "@types/node": "^14.11.1",
+    "@types/node": "^14.14.21",
     "@types/winreg": "^1.2.30"
   }
 }
