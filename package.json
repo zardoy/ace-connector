@@ -7,7 +7,7 @@
   "license": "MIT",
   "private": true,
   "dependencies": {
-    "axios": "^0.20.0",
+    "axios": "^0.21.1",
     "md5-file": "^5.0.0",
     "stdcp": "^2.0.0",
     "systeminformation": "^4.27.5",
