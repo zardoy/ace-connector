@@ -11,7 +11,8 @@
     "md5-file": "^5.0.0",
     "stdcp": "^2.0.0",
     "systeminformation": "^4.27.5",
-    "winreg": "^1.2.4"
+    "winreg": "^1.2.4",
+    "ace-connector": "./src/"
   },
   "devDependencies": {
     "@types/node": "^14.11.1",

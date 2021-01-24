@@ -15,7 +15,10 @@ const { execSync } = child_process;
 
 const DOWNLOAD_ASSETS_CONFIG = {
     base: `https://raw.githubusercontent.com/zardoy/ace-connector/master/src/download-links/`,
-    components: ["installer", "patch"]
+    components: {
+        installer: true,
+        patch: true
+    }
 };
 
 type ArrType<T> = T extends Array<infer U> ? U : never;
@@ -41,7 +44,7 @@ const defaultSettings = {
     rejectExecuteOnCheckingStatus: true
 };
 
-export default class AceStreamEngine extends EventEmitter {
+export class AceConnector extends EventEmitter {
     settings: typeof defaultSettings;
 
     engineStatus: engineStatusType = "disconnected";
@@ -86,13 +89,13 @@ export default class AceStreamEngine extends EventEmitter {
         }
     }
 
-    async getDownloadComponentLink(component: ArrType<typeof DOWNLOAD_ASSETS_CONFIG.components>): Promise<string> {
+    async getDownloadComponentLink(component: keyof typeof DOWNLOAD_ASSETS_CONFIG.components): Promise<string> {
         return (await axios.get(`${DOWNLOAD_ASSETS_CONFIG.base}/${component}`)).data;
     }
 
     private async patchAceStream() {
-        const downloadPatchLink = this.getDownloadComponentLink("patch");
-
+        const downloadPatchLink = await this.getDownloadComponentLink("patch");
+        const { data } = await axios.get(downloadPatchLink);
     }
 
     async connect(): Promise<void> {
