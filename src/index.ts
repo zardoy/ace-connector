@@ -7,6 +7,7 @@ import si from "systeminformation";
 import md5File from "md5-file";
 import axios from "axios";
 import { setSync as setCodePageSync } from "stdcp";
+import TypedEmitter from "typed-emitter";
 
 import { getRegistryKey } from "./winreg-wrapper";
 
@@ -17,74 +18,164 @@ const DOWNLOAD_ASSETS_CONFIG = {
     base: `https://raw.githubusercontent.com/zardoy/ace-connector/master/src/download-links/`,
     components: {
         installer: true,
-        patch: true
+        patchBrowserAds: true
     }
 };
-
-type ArrType<T> = T extends Array<infer U> ? U : never;
+type DownloadableComponent = keyof typeof DOWNLOAD_ASSETS_CONFIG["components"]; 
 
 // import si from "systeminformation";
 
-type connectionErrorType = "ACE_ENGINE_NOT_INSTALLED" | "ACE_ENGINE_READ_PORT_ERROR" | "ACE_ENGINE_RUN_FAIL" | "ACE_ENGINE_NOT_STARTED";
+type ConnectionErrorType = "ACE_ENGINE_NOT_INSTALLED" | "ACE_ENGINE_READ_PORT_ERROR" | "ACE_ENGINE_RUN_FAIL" | "ACE_ENGINE_NOT_STARTED";
 
-type engineStatusType = "checking" | "disconnected" | "starting" | "connected";
+type EngineConnectionStatus = "checking" | "disconnected" | "starting" | "connected";
+
 
 export class ConnectionError extends Error {
-    constructor(public type: connectionErrorType, public reason: string) {
+    constructor(public type: ConnectionErrorType, public reason: string) {
         super();
         this.name = "ConnectionError";
     }
 }
 
-const defaultSettings = {
-    startEngineOnConnect: true,
-    startEngineRetries: 3,
-    checkBrowserAds: true,
-    httpPort: 6878,
-    rejectExecuteOnCheckingStatus: true
+// TODO auto fill JSDoc defaults
+export interface AceConnectorOptions {
+    /**
+     * If `true` will start engine on `connect()` (if it not started of course)
+     */
+    autoStartOnConnect: boolean,
+    /**
+     * Watch options for engine status
+     */
+    watchOptions: {
+        /**
+         * If `true` AceConnector will watch for engine status. It was disconnected you will get `updateStatus` event immediately
+         */
+        enabled: boolean,
+        /**
+         * If `true` AceConnector will started engine immediately after it was suspended
+         */
+        autoRestart: boolean
+    },
+    maxStartRetries: number,
+    /**
+     * AceStream opens ads in a browser when you request stream (TODO).
+     * 
+     * Checks if patches are available (only on `connect()`). If `true`, `patchAvailable` event will be emited.
+     * To prevent auto downloading and applying the patch you need to return `false` from this event.
+     * 
+     * In case if AceStream is running and auto-patch requested, AceStream will be shutted down.
+     */
+    checkForPatch: boolean;
+    /**
+     * This port will be used for communication with Ace Stream Engine.
+     */
+    httpPort: number,
+    /**
+     * You can specify 
+     * If not specified AceConnector will get this value from the registry
+     */
+    aceEngineExecutablePath?: string
+}
+
+const defaultOptions: AceConnectorOptions = {
+    autoStartOnConnect: true,
+    watchOptions: {
+        enabled: true,
+        autoRestart: true
+    },
+    maxStartRetries: 3,
+    checkForPatch: true,
+    httpPort: 6878
 };
 
-export class AceConnector extends EventEmitter {
-    settings: typeof defaultSettings;
+export type AceConnectorEvents = {
+    /**
+     * Emitted on connection status update
+     */
+    updateStatus(engineStatus: EngineConnectionStatus): void;
+    /**
+     * Emitted when patch available for Ace Stream.
+     * @returns if `false` auto downloading and applying the patch will be prevented.
+     */
+    patchAvailable(): void | boolean;
+    /**
+     * Emitted when patching is done.
+     * @returns `false` auto-start will be prevented
+     */
+    autoPatchCompleted(): void | boolean;
+};
 
-    engineStatus: engineStatusType = "disconnected";
-    engineConnected: boolean = false;
+type EngineStatus = {
+    status: Exclude<EngineConnectionStatus, "connected">;
+} | {
+    status: Extract<EngineConnectionStatus, "connected">;
+    version: string;
+};
 
-    engineDir: string | undefined;
-    engineVersion: number | undefined;
-    portFileObserver: fs.FSWatcher | undefined;
+type FilesToPatch = Array<{
+    /**
+     * From the engine directory
+     */
+    relativePath: string;
+    expectedMD5: string;
+    componentToDownloadAndReplace: DownloadableComponent
+}>;
 
-    constructor(userSettings?: Partial<typeof defaultSettings>) {
+export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceConnectorEvents>) {
+    static filesToPatch: FilesToPatch = [
+        {
+            relativePath: "lib/acestreamengine.CoreApp.pyd",
+            expectedMD5: "ed68c75e473fe2642dbaa058fde1a912",
+            componentToDownloadAndReplace: "patchBrowserAds"
+        }
+    ];
+    
+    options: AceConnectorOptions;
+    /**
+     * Represents the last status (useful is the real status is `checking`).
+     * `null` in case if `connect()` wasn't called
+     */
+    lastConnectedStatus: Extract<EngineConnectionStatus, "connected" | "disconnected"> | null = null;
+    engine: EngineStatus = {
+        status: "disconnected",
+    };
+    engineExecutable: {
+        path: string;
+        dir: string;
+    } | undefined;
+    private portFileObserver: fs.FSWatcher | undefined;
+
+    constructor(userOptions?: Partial<typeof defaultOptions>) {
         super();
-        if (process.platform !== "win32") console.warn("Warning! We support only windows platform.");
-        this.settings = { ...userSettings, ...defaultSettings };
+        if (process.platform !== "win32") throw new Error("Only Windows platform is supported.");
+        this.options = { ...defaultOptions, ...userOptions };
     }
 
-    private onEngineStart() {
-        this.engineStatus = "connected";
-        this.engineConnected = true;
-        this.emit("connect");
-    }
-
-    private onEngineDisconnect() {
-        this.engineStatus = "disconnected";
-        this.engineConnected = false;
-        this.emit("disconnect");
+    /**
+     * Use this instead of `this.emit("updateStatus", ...)`;
+     */
+    updateStatus(newEngineStatus: EngineStatus) {
+        if (
+            newEngineStatus.status === "disconnected" ||
+            newEngineStatus.status === "connected"
+        ) {
+            this.lastConnectedStatus = newEngineStatus.status;
+        }
+        this.engine = newEngineStatus;
+        this.emit("updateStatus", newEngineStatus.status);
     }
 
     async checkHttpConnection() {
         try {
             let { status, data } = await axios.get(`http://localhost:6878/webui/api/service?method=get_version`);//check with timeout
             if (data.error) throw new Error(data.error);
-            this.engineVersion = data.result.version;
-            this.engineStatus = "connected";
-            this.engineConnected = true;
-            this.emit("connect");
+            this.updateStatus({
+                status: "connected",
+                version: data.result.version
+            });
             return true;
         } catch (err) {
-            if (this.engineStatus === "connected") {
-                this.onEngineDisconnect();
-            }
+            this.updateStatus({ status: "disconnected" });
             return false;
         }
     }
@@ -93,95 +184,126 @@ export class AceConnector extends EventEmitter {
         return (await axios.get(`${DOWNLOAD_ASSETS_CONFIG.base}/${component}`)).data;
     }
 
-    private async patchAceStream() {
-        const downloadPatchLink = await this.getDownloadComponentLink("patch");
+    /**
+     * Fire it from `patchAvailable` event to patch AceStream
+     */
+    async patchAceStream() {
+        const downloadPatchLink = await this.getDownloadComponentLink("patchBrowserAds");
         const { data } = await axios.get(downloadPatchLink);
+        // todo-high download file
     }
 
     async connect(): Promise<void> {
-        this.engineStatus = "checking";
+        this.emit("updateStatus", "checking");
         try {
             setCodePageSync(65001);
             const currentCHCP = execSync("chcp").toString();
             console.log(currentCHCP);
-            // CHECKING WETHER ACE STREAM IS INSTALLED
-            // 1. REGISTRY VALUE
-            const { keyValue: aceEngineExecPath } = await getRegistryKey("HKCU\\SOFTWARE\\AceStream\\EnginePath");
-            if (!aceEngineExecPath) {
+            await this.connectInternal();
+        } catch (err) {
+            throw err;
+        }
+    }
+    
+    private async connectInternal(): Promise<void> {
+        // 1. CHECKING WETHER ACE STREAM IS INSTALLED OR NOT
+        // REGISTRY VALUE
+        const engineExecPath = await (async (): Promise<string> => {
+            if (this.options.aceEngineExecutablePath) {
+                return this.options.aceEngineExecutablePath;
+            }
+            console.time("registry_read");
+            const { keyValue: engineExecPath } = await getRegistryKey("HKCU\\SOFTWARE\\AceStream\\EnginePath");
+            if(!engineExecPath) {
                 throw new ConnectionError("ACE_ENGINE_NOT_INSTALLED", "Can't read registry value");
             }
-            // 2. ENGINE EXE FILE
-            if (!fs.existsSync(aceEngineExecPath)) {
-                throw new ConnectionError(
-                    "ACE_ENGINE_NOT_INSTALLED",
-                    `Can't find ace engine executable on this path: ${aceEngineExecPath}`
-                );
-            }
-            // CHECK END
-            this.engineDir = path.dirname(aceEngineExecPath);
+            console.timeEnd("registry_read");
+            return engineExecPath;
+        })();
+        if (!fs.existsSync(engineExecPath)) {
+            throw new ConnectionError(
+                "ACE_ENGINE_NOT_INSTALLED",
+                `Can't find ace engine from registry path: ${engineExecPath}`
+            );
+        }
+        // CHECK END
+        const engineDir = path.dirname(engineExecPath);
+        this.engineExecutable = {
+            path: engineExecPath,
+            dir: engineDir
+        };
 
-            let enginePortFile = path.join(this.engineDir, "acestream.port");
-            // DROPING PREV FILE OBSERVER IF EXISTS
-            if (this.portFileObserver) {
-                this.portFileObserver.close();
-                this.portFileObserver = undefined;
+        let enginePortFile = path.join(engineDir, "acestream.port");
+        // 2. WATCH ENGINE STATUS
+        // DROPING PREV FILE OBSERVER IF EXISTS
+        if (this.portFileObserver) {
+            this.portFileObserver.close();
+            this.portFileObserver = undefined;
+        }
+        // CREATING NEW ONE TO TRACK ACE ENGINE STATUS
+        this.portFileObserver = fs.watch(engineDir, (eventName, filename) => {
+            if (filename !== path.basename(enginePortFile)) return;
+            // note: if file just created, then "change" event will be emited
+            if (eventName === "change") {
+                this.checkHttpConnection();
+            } else if (!fs.existsSync(enginePortFile)) {// engine stopped
+                this.updateStatus({ status: "disconnected" });
             }
-            // CREATING NEW ONE TO TRACK ACE ENGINE STATUS
-            this.portFileObserver = fs.watch(this.engineDir, (eventName, filename) => {
-                if (filename !== path.basename(enginePortFile)) return;
-                // note: if file just created, then "change" event will be emited
-                if (eventName === "change") {
-                    this.checkHttpConnection();
-                } else if (!fs.existsSync(enginePortFile)) {// engine stopped
-                    this.onEngineDisconnect();
-                }
-            });
+        });
 
-            // CHECK BROWSER ADS
-            if (this.settings.checkBrowserAds) {
-                const relativePathToPatchFile = "lib/acestreamengine.CoreApp.pyd";
-                const fullPathToPachFile = path.join(this.engineDir, relativePathToPatchFile);
-                // todo action if this file doesn't exist
-                if (
-                    fs.existsSync(fullPathToPachFile) &&
-                    //cheking file md5 hash
-                    await md5File(fullPathToPachFile) !== "ed68c75e473fe2642dbaa058fde1a912"
-                ) {
-                    // todo prompt user first
+        // CHECK FOR PATCHES
+        if (this.options.checkForPatch) {
+            const patchNeededResults = await Promise.all(
+                AceConnector.filesToPatch.map(fileToPatch =>
+                    // it returns Promise, not function
+                    (async () => {
+                        const pathToPachFile = path.join(engineDir, fileToPatch.relativePath);
+                        if (
+                            fs.existsSync(pathToPachFile) &&
+                            //cheking file md5 hash
+                            await md5File(pathToPachFile) !== fileToPatch.expectedMD5
+                        ) {
+                            return true;
+                        } else {
+                            return false;
+                        }
+                    })()
+                )
+            );
+            const patchNeeded = patchNeededResults.includes(true);
+            if (patchNeeded) {
+                const eventResult = this.emit("patchAvailable");
+                if (eventResult !== false) {
                     await this.patchAceStream();
                 }
             }
+        }
 
-            const startAceEngine = async (): Promise<void> => {
-                if (this.settings.startEngineOnConnect) {
-                    //todo implement retries
-                    this.engineStatus = "starting";
-                    const { stderr, stdout } = await execFilePromise(aceEngineExecPath);
-
-                    // throw new ConnectionError("ACE_ENGINE_RUN_FAIL", `Can't open ace engine executable (${aceEngineExecPath}). You can try to open it manually.`);
-                } else {
-                    throw new ConnectionError("ACE_ENGINE_NOT_STARTED", "settings of ace connector");
-                }
-            };
-
-            // if engine port doesn't exist - it 100% need to be started
-            if (!fs.existsSync(enginePortFile)) {
-                return startAceEngine();
+        const startAceEngine = async (): Promise<void> => {
+            if (this.options.autoStartOnConnect) {
+                //todo implement retries
+                const { stderr, stdout } = await execFilePromise(engineExecPath);
+                // throw new ConnectionError("ACE_ENGINE_RUN_FAIL", `Can't open ace engine executable (${aceEngineExecPath}). You can try to open it manually.`);
             } else {
-                // but sometimes ace port file exists even if engine wasn't started so we need additional check 
-                // 3. FINDING ENGINE PROCESS
-                let currentProcesses = await si.processes();
-                const aceEngineProcess = currentProcesses.list.find((process) => process.path === aceEngineExecPath);
-                if (aceEngineProcess) {
-                    if (!await this.checkHttpConnection()) {
-                        // todo: kill process and start again
-                    }
-                } else {
-                    return await startAceEngine();
-                }
+                throw new ConnectionError("ACE_ENGINE_NOT_STARTED", "settings of ace connector");
             }
-        } catch (err) {
-            throw err;
+        };
+
+        // if engine port doesn't exist - it 100% need to be started
+        if (!fs.existsSync(enginePortFile)) {
+            await startAceEngine();
+        } else {
+            // but sometimes ace port file exists even if engine wasn't started so we need additional check 
+            // 3. FINDING ENGINE PROCESS
+            let runningProcesses = (await si.processes()).list;
+            const aceEngineProcessFound = runningProcesses.find((process) => process.path === engineExecPath);
+            if (aceEngineProcessFound) {
+                if (!await this.checkHttpConnection()) {
+                    // todo: kill process and start again
+                }
+            } else {
+                await startAceEngine();
+            }
         }
     }
 
