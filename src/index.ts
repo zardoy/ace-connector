@@ -128,6 +128,10 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
             componentToDownloadAndReplace: "patchBrowserAds"
         }
     ];
+
+    static async getDownloadComponentLink(component: keyof typeof DOWNLOAD_ASSETS_CONFIG.components): Promise<string> {
+        return (await axios.get(`${DOWNLOAD_ASSETS_CONFIG.base}/${component}`)).data;
+    }
     
     options: AceConnectorOptions;
     /**
@@ -153,7 +157,7 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
     /**
      * Use this instead of `this.emit("updateStatus", ...)`;
      */
-    updateStatus(newEngineStatus: EngineStatus) {
+    private updateStatus(newEngineStatus: EngineStatus) {
         if (
             newEngineStatus.status === "disconnected" ||
             newEngineStatus.status === "connected"
@@ -164,7 +168,10 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
         this.emit("updateStatus", newEngineStatus.status);
     }
 
-    async checkHttpConnection() {
+    /**
+     * Check wether Ace Engine is available on HTTP or not
+     */
+    async checkHttpConnection(): Promise<boolean> {
         try {
             let { status, data } = await axios.get(`http://localhost:6878/webui/api/service?method=get_version`);//check with timeout
             if (data.error) throw new Error(data.error);
@@ -179,15 +186,11 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
         }
     }
 
-    async getDownloadComponentLink(component: keyof typeof DOWNLOAD_ASSETS_CONFIG.components): Promise<string> {
-        return (await axios.get(`${DOWNLOAD_ASSETS_CONFIG.base}/${component}`)).data;
-    }
-
     /**
      * Fire it from `patchAvailable` event to patch AceStream
      */
     async patchAceStream() {
-        const downloadPatchLink = await this.getDownloadComponentLink("patchBrowserAds");
+        const downloadPatchLink = await AceConnector.getDownloadComponentLink("patchBrowserAds");
         const { data } = await axios.get(downloadPatchLink);
 
     }
@@ -285,7 +288,7 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
                     const { stderr, stdout } = await execFilePromise(engineExecPath);
                     // throw new ConnectionError("ACE_ENGINE_RUN_FAIL", `Can't open ace engine executable (${aceEngineExecPath}). You can try to open it manually.`);
                 } else {
-                    throw new ConnectionError("ACE_ENGINE_NOT_STARTED", "");
+                    throw new ConnectionError("ACE_ENGINE_NOT_STARTED", "With these options Ace Engine needs to be started manually");
                 }
             };
     
