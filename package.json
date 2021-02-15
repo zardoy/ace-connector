@@ -7,7 +7,6 @@
   "license": "MIT",
   "private": true,
   "dependencies": {
-    "ace-connector": "./src/",
     "axios": "^0.21.1",
     "axios-retry": "^3.1.9",
     "cheerio": "^1.0.0-rc.5",
