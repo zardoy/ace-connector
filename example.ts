@@ -1,12 +1,6 @@
 import { AceConnector } from "ace-connector";
-export const aceEngine = new AceConnector({
-    // default settings
-    startEngineOnConnect: true, //will automatically start the engine on aceEngine.connect() if it not started yet
-    startEngineRetries: 3, // can be zero
-    checkBrowserAds: true, // see below
-    httpPort: 6878, // default port for http API
-    autoReconnect: true // see below
-});
+export const aceConnector = new AceConnector();
+aceConnector.updateStatus
 const installAceStream = async () => {
     await AceConnector.downloadInstaller();
     // open the installer
