@@ -1,16 +1,24 @@
-import * as fs from "fs";
-import * as path from "path";
+import fs, { unlink, unlinkSync } from "fs";
+import path from "path";
 import { EventEmitter } from "events";
-import * as child_process from "child_process";
-import * as util from "util";
+import child_process from "child_process";
+import util from "util";
 import si from "systeminformation";
 import md5File from "md5-file";
-import axios from "axios";
+import { once } from "events";
 import TypedEmitter from "typed-emitter";
 import { killer } from "cross-port-killer";
+import os from "os";
 
 import { getRegistryKey } from "./winreg-wrapper";
 import psList from "ps-list";
+import got, { Progress } from "got";
+
+import stream from "stream";
+import { defaultsDeep } from "lodash";
+import execa from "execa";
+
+const pipeline = util.promisify(stream.pipeline);
 
 // TODO PERHAPS EXECA
 const execFilePromise = util.promisify(child_process.execFile);
@@ -22,7 +30,7 @@ const DOWNLOAD_ASSETS_CONFIG = {
         patchBrowserAds: true
     }
 };
-type DownloadableComponent = keyof typeof DOWNLOAD_ASSETS_CONFIG["components"]; 
+type DownloadableComponent = keyof typeof DOWNLOAD_ASSETS_CONFIG["components"];
 
 type ConnectionErrorType = "ACE_ENGINE_NOT_INSTALLED" | "ACE_ENGINE_READ_PORT_ERROR" | "ACE_ENGINE_RUN_FAIL" | "ACE_ENGINE_NOT_STARTED";
 
@@ -39,27 +47,26 @@ export class ConnectionError extends Error {
 // TODO auto fill JSDoc defaults
 export interface AceConnectorOptions {
     /**
-     * If `true` will start engine on `connect()` (if it not started of course)
+     * Setting this to false will prevent watching port file
      */
-    autoStartOnConnect: boolean,
+    autoStart: false | {
+        /**
+         * If `true` start engine on `connect()` if it's not started yet
+         */
+        onConnect: boolean;
+        /**
+         * If `true` AceConnector will started engine immediately after it was suspended. You also get `updateStatus` event immediately
+         */
+        onSuspend: boolean;
+    };
     /**
-     * Watch options for engine status
+     * @todo Not implemented yet
      */
-    watchOptions: {
-        /**
-         * If `true` AceConnector will watch for engine status. It was disconnected you will get `updateStatus` event immediately
-         */
-        enabled: boolean,
-        /**
-         * If `true` AceConnector will started engine immediately after it was suspended
-         */
-        autoRestart: boolean
-    },
     maxStartRetries: number,
     /**
      * AceStream opens ads in a browser when you request stream (TODO).
      * 
-     * Checks if patches are available (only on `connect()`). If `true`, `patchAvailable` event will be emited.
+     * Checks if patches are available (only on `connect()`). If enabled and patches are available, `patchAvailable` event will be emited.
      * To prevent auto downloading and applying the patch you need to return `false` from this event.
      * 
      * In case if AceStream is running and auto-patch requested, AceStream will be shutted down.
@@ -73,18 +80,40 @@ export interface AceConnectorOptions {
      * You can specify 
      * If not specified AceConnector will get this value from the registry
      */
-    aceEngineExecutablePath?: string
+    aceEngineExecutablePath?: string,
+    /**
+     * If `true` and AceStream isn't installed it will be downloaded and installed automatically*
+     * 
+     * Emmited events: `beforeInstall`, `downloadInstallerProgress`, `installerDownloaded`, `installComplete`, `installError`
+     * 
+     * @todo auto-linked events
+     * @todo-high handle errors
+     */
+    autoInstall: boolean;
 }
 
 const defaultOptions: AceConnectorOptions = {
-    autoStartOnConnect: true,
-    watchOptions: {
-        enabled: true,
-        autoRestart: true
+    autoStart: {
+        onConnect: true,
+        onSuspend: true,
     },
     maxStartRetries: 3,
     checkForPatch: true,
-    httpPort: 6878
+    httpPort: 6878,
+    autoInstall: false
+};
+
+type PreventableEvent = {
+    preventDefault: () => void;
+};
+
+type InstallerDownloadedEvent = {
+    /**
+     * Call it to prevent auto-installation. Must be called instantly.
+     * 
+     * @returns Function to begin auto-installation
+     */
+    handleLaunchManually: () => () => void;
 };
 
 export type AceConnectorEvents = {
@@ -92,16 +121,30 @@ export type AceConnectorEvents = {
      * Emitted on connection status update
      */
     updateStatus(engineStatus: EngineConnectionStatus): void;
+    // todo-moderate @returns could be prevented from downloading and applying the patch
     /**
      * Emitted when patch available for Ace Stream.
-     * @returns if `false` auto downloading and applying the patch will be prevented.
      */
-    patchAvailable(): void | boolean;
+    // @returns `false` auto-start onConnect will be prevented (if not disabled by settings)
+    patchAvailable(): void;
     /**
      * Emitted when patching is done.
-     * @returns `false` auto-start will be prevented
      */
-    autoPatchCompleted(): void | boolean;
+    autoPatchCompleted(): void;
+
+    // install events
+    beforeInstall(): void;
+    downloadInstallerProgress(progress: Progress): void;
+    installerDownloaded(event: InstallerDownloadedEvent): void;
+    /**
+     * Still doesn't guarantee that AceStream in installed correctly
+     */
+    installComplete(): void;
+
+    /**
+     * @param step if `download` - network error, `execute` - local error (executing)
+     */
+    installError(step: "download" | "execute"): void;
 };
 
 type EngineStatus = {
@@ -117,10 +160,12 @@ type FilesToPatch = Array<{
      */
     relativePath: string;
     expectedMD5: string;
-    componentToDownloadAndReplace: DownloadableComponent
+    componentToDownloadAndReplace: DownloadableComponent;
 }>;
 
 export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceConnectorEvents>) {
+    static RECOMMENDED_VERSION = "3.1.32";
+
     static filesToPatch: FilesToPatch = [
         {
             relativePath: "lib/acestreamengine.CoreApp.pyd",
@@ -129,10 +174,25 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
         }
     ];
 
-    static async getDownloadComponentLink(component: keyof typeof DOWNLOAD_ASSETS_CONFIG.components): Promise<string> {
-        return (await axios.get(`${DOWNLOAD_ASSETS_CONFIG.base}/${component}`)).data;
+    static async getDownloadComponentUrl(component: keyof typeof DOWNLOAD_ASSETS_CONFIG.components): Promise<string> {
+        return (await got(`${DOWNLOAD_ASSETS_CONFIG.base}/${component}`)).body.trim();
     }
-    
+
+    /**
+     * Downloads Ace Stream
+     * @param savePath Path to save executable file. It's recommended to use temp path
+     */
+    static async downloadAceStreamInstaller(savePath: string) {
+        const downloadUrl = await AceConnector.getDownloadComponentUrl("installer");
+        await pipeline(
+            got.stream(downloadUrl)
+                .on("downloadProgress", progress => {
+                    console.log(progress.percent * 100 + "%");
+                }),
+            fs.createWriteStream(savePath)
+        );
+    }
+
     options: AceConnectorOptions;
     /**
      * Represents the last status (useful is the real status is `checking`).
@@ -146,12 +206,13 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
         path: string;
         dir: string;
     } | undefined;
+    httpApiPort = 6878;
     private portFileObserver: fs.FSWatcher | undefined;
 
     constructor(userOptions?: Partial<typeof defaultOptions>) {
         super();
         if (process.platform !== "win32") throw new Error("Only Windows platform is supported.");
-        this.options = { ...defaultOptions, ...userOptions };
+        this.options = defaultsDeep(defaultOptions, userOptions);
     }
 
     /**
@@ -173,7 +234,12 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
      */
     async checkHttpConnection(): Promise<boolean> {
         try {
-            let { status, data } = await axios.get(`http://localhost:6878/webui/api/service?method=get_version`);//check with timeout
+            // todo-low response type
+            // todo-high check with timeout
+            let { statusCode, body: data } = await got<{ error: any, result: any; }>(
+                `http://localhost:${this.httpApiPort}/webui/api/service?method=get_version`, {
+                responseType: "json"
+            });
             if (data.error) throw new Error(data.error);
             this.updateStatus({
                 status: "connected",
@@ -190,9 +256,52 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
      * Fire it from `patchAvailable` event to patch AceStream
      */
     async patchAceStream() {
-        const downloadPatchLink = await AceConnector.getDownloadComponentLink("patchBrowserAds");
-        const { data } = await axios.get(downloadPatchLink);
+        if (!this.engineExecutable) {
+            // engine isn't found
+            return;
+        }
 
+        const patchConfig = AceConnector.filesToPatch[0];
+        const downloadPatchLink = await AceConnector.getDownloadComponentUrl(patchConfig.componentToDownloadAndReplace);
+        // todo-high replace with write
+        const filePathToPatch = path.resolve(this.engineExecutable.dir, patchConfig.relativePath);
+        await fs.promises.unlink(filePathToPatch);
+        await pipeline(
+            got.stream(downloadPatchLink),
+            fs.createWriteStream(filePathToPatch)
+        );
+        // todo-moderate check md5 hash
+        this.emit("autoPatchCompleted");
+    }
+
+    /**
+     * Will skip download if executable already exists on this step
+     */
+    async installAceStream(savePath: string) {
+        const installDownloadedAceStream = async () => {
+            // todo-moderate autohotkey
+            await execa(savePath, {
+                stdio: "inherit"
+            });
+            this.emit("installComplete");
+        };
+
+        this.emit("beforeInstall");
+        // todo rewrite with promises
+        if (!fs.existsSync(savePath)) {
+            await AceConnector.downloadAceStreamInstaller(savePath);
+        }
+        let preventAutoInstallation = false;
+        this.emit("installerDownloaded", {
+            handleLaunchManually: () => {
+                preventAutoInstallation = true;
+                return installDownloadedAceStream;
+            }
+        });
+        if (!preventAutoInstallation) {
+            await installDownloadedAceStream();
+        }
+        await once(this, "installComplete");
     }
 
     async connect(): Promise<void> {
@@ -200,10 +309,22 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
         try {
             await this.connectInternal();
         } catch (err) {
-            throw err;
+            if (
+                this.options.autoInstall &&
+                err instanceof ConnectionError &&
+                err.type === "ACE_ENGINE_NOT_INSTALLED"
+            ) {
+                await this.installAceStream(
+                    path.join(os.tmpdir(), "ace-connector--ace-stream-installer.exe")
+                );
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                await this.connectInternal();
+            } else {
+                throw err;
+            }
         }
     }
-    
+
     private async connectInternal(): Promise<void> {
         // -- CHECKING WETHER ACE STREAM IS INSTALLED OR NOT
         // REGISTRY VALUE
@@ -213,7 +334,7 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
             }
             console.time("registry_read");
             const { keyValue: engineExecPath } = await getRegistryKey("HKCU\\SOFTWARE\\AceStream\\EnginePath");
-            if(!engineExecPath) {
+            if (!engineExecPath) {
                 throw new ConnectionError("ACE_ENGINE_NOT_INSTALLED", "Can't read registry value");
             }
             console.timeEnd("registry_read");
@@ -234,7 +355,7 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
         let enginePortFile = path.join(engineDir, "acestream.port");
         // -- WATCH ENGINE STATUS
         (() => {
-            if (!this.options.watchOptions.enabled) return;
+            if (!this.options.autoStart) return;
             // DROPING PREV FILE OBSERVER IF EXISTS
             if (this.portFileObserver) {
                 this.portFileObserver.close();
@@ -253,7 +374,7 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
         })();
 
         // -- CHECK FOR PATCHES
-        await (async () => { 
+        const skipEngineStartFromPatch = await (async (): Promise<void | true> => {
             if (!this.options.checkForPatch) return;
             const patchNeededResults = await Promise.all(
                 AceConnector.filesToPatch.map(fileToPatch =>
@@ -273,17 +394,14 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
                 )
             );
             const patchNeeded = patchNeededResults.includes(true);
-            if (patchNeeded) {
-                const eventResult = this.emit("patchAvailable");
-                if (eventResult !== false) {
-                    await this.patchAceStream();
-                }
-            }
+            if (!patchNeeded) return;
+            this.emit("patchAvailable");
+            await this.patchAceStream();
         })();
         // -- CONNECT ENGINE
         await (async () => {
             const startAceEngine = async (): Promise<void> => {
-                if (this.options.autoStartOnConnect) {
+                if (this.options.autoStart && this.options.autoStart.onConnect) {
                     //todo implement retries
                     const { stderr, stdout } = await execFilePromise(engineExecPath);
                     // throw new ConnectionError("ACE_ENGINE_RUN_FAIL", `Can't open ace engine executable (${aceEngineExecPath}). You can try to open it manually.`);
@@ -291,7 +409,7 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
                     throw new ConnectionError("ACE_ENGINE_NOT_STARTED", "With these options Ace Engine needs to be started manually");
                 }
             };
-    
+
             // if engine port doesn't exist - it 100% need to be started
             if (!fs.existsSync(enginePortFile)) {
                 await startAceEngine();
