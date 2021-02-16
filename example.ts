@@ -7,6 +7,8 @@ export const aceConnector = new AceConnector();
 (async () => {
     await aceConnector.connect();
     console.log("Ace Stream installed!");
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    console.log(await aceConnector.disconnect());
 })()
     .catch(err => { throw err; });
 
