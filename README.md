@@ -37,6 +37,8 @@ All of these features all configurable via first constructor argument. See [defa
 
 If AceStream isn't installed on user's computer, AceConnect can automatically download (and even install!) AceStream.
 
+[Ace Stream installer virustotal](https://www.virustotal.com/gui/file/542422e18521655bf6a678e414ec23df0356b6c5027034bf098cdcf1c365e9dd)
+
 <!-- AceConnector executes; auto auto-opening installer and emulating keyboard events -->
 
 ## Auto Reconnect
