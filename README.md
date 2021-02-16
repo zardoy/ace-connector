@@ -4,6 +4,7 @@
   - [What is AceStream?](#what-is-acestream)
   - [Example use](#example-use)
   - [Key Features](#key-features)
+  - [Auto installing](#auto-installing)
   - [Auto Reconnect](#auto-reconnect)
 
 After 2 years, I finally released that.
@@ -25,9 +26,18 @@ See [example.ts](./example.ts).
 
 ## Key Features
 
+All of these features all configurable via first constructor argument. See [defaults](src/index.ts). 
+
 - Auto patching to **remove ads**
 - Auto reconnect (see below)
 - Start HTTP stream from the torrent
+- Auto installing
+
+## Auto installing
+
+If AceStream isn't installed on user's computer, AceConnect can automatically download (and even install!) AceStream.
+
+<!-- AceConnector executes; auto auto-opening installer and emulating keyboard events -->
 
 ## Auto Reconnect
 
