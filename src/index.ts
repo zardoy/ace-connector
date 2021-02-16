@@ -47,9 +47,9 @@ export class ConnectionError extends Error {
 // TODO auto fill JSDoc defaults
 export interface AceConnectorOptions {
     /**
-     * Setting this to false will prevent watching port file
+     * Set this to null to prevent watching port file
      */
-    autoStart: false | {
+    autoStart: null | {
         /**
          * If `true` start engine on `connect()` if it's not started yet
          */
@@ -340,6 +340,16 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
         }
     }
 
+    private async getEnginePid() {
+        // TODO-moderate FIX WEIRD RUSSIAN CHARACTERS 
+        // let runningProcesses = (await si.processes()).list;
+        // const aceEngineProcessFound = runningProcesses.find((process) => process.path === engineExecPath);
+        const processes = await psList();
+        return processes.find(process => {
+            return process.name === path.basename(this.engineExecutable!.path);
+        })?.pid.toString();
+    }
+
     private async connectInternal(): Promise<void> {
         // -- CHECKING WETHER ACE STREAM IS INSTALLED OR NOT
         // GET ACE STREAM ENGINE PATH
@@ -398,6 +408,13 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
                 } else if (!fs.existsSync(enginePortFile)) {
                     debug(`Port file removed. Engine has stopped`);
                     this.updateStatus({ status: "disconnected" });
+                    if (this.options.autoStart?.onSuspend) {
+                        debug(`options.autoStart.onSuspend set to true, restarting engine...`);
+                        void (async () => {
+                            await new Promise(resolve => setTimeout(resolve, 5000));
+                            void this.connect();
+                        })();
+                    }
                 }
             });
         })();
@@ -436,7 +453,7 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
         // -- CONNECT ENGINE
         await (async () => {
             const startEngine = async (): Promise<void> => {
-                if (this.options.autoStart && this.options.autoStart.onConnect) {
+                if (this.options.autoStart?.onConnect) {
                     //todo implement retries
                     debug("Starting engine");
                     await open(engineExecPath);
@@ -455,21 +472,13 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
             } else {
                 debug("Port file exists. Searching for engine in process list");
                 // but sometimes ace port file exists even if engine wasn't started so we need additional check 
-                // FINDING ENGINE PROCESS
-
-                // TODO-moderate FIX WEIRD RUSSIAN CHARACTERS 
-                // let runningProcesses = (await si.processes()).list;
-                // const aceEngineProcessFound = runningProcesses.find((process) => process.path === engineExecPath);
-                const processes = await psList();
-                const engineProcessFound = processes.find(process => {
-                    return process.name === path.basename(this.engineExecutable!.path);
-                });
-                if (engineProcessFound) {
+                const enginePid = await this.getEnginePid();
+                if (enginePid) {
                     debug("Engine process found");
                     const apiAvailable = this.checkHttpConnection();
                     if (!apiAvailable) {
                         debug("Api seems to be unavailable. Killing engine process");
-                        await killer.killByPid(engineProcessFound.pid.toString());
+                        await killer.killByPid(enginePid);
                         await startEngine();
                     }
                 } else {
@@ -478,6 +487,15 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
                 }
             }
         })();
+    }
+
+    async disconnect(): Promise<boolean> {
+        const enginePid = await this.getEnginePid();
+        if (enginePid) {
+            await killer.killByPid(enginePid);
+            return true;
+        }
+        return false;
     }
 
     execute() {
