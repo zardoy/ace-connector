@@ -7,7 +7,6 @@ exports.AceConnector = exports.ConnectionError = void 0;
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const events_1 = require("events");
-const child_process_1 = __importDefault(require("child_process"));
 const util_1 = __importDefault(require("util"));
 const md5_file_1 = __importDefault(require("md5-file"));
 const events_2 = require("events");
@@ -19,11 +18,13 @@ const got_1 = __importDefault(require("got"));
 const stream_1 = __importDefault(require("stream"));
 const lodash_1 = require("lodash");
 const execa_1 = __importDefault(require("execa"));
+const debug_1 = __importDefault(require("@prisma/debug"));
+const open_1 = __importDefault(require("open"));
 const pipeline = util_1.default.promisify(stream_1.default.pipeline);
-// TODO PERHAPS EXECA
-const execFilePromise = util_1.default.promisify(child_process_1.default.execFile);
+// todo-low use package.json name
+const debug = debug_1.default("ace-connector");
 const DOWNLOAD_ASSETS_CONFIG = {
-    base: `https://raw.githubusercontent.com/zardoy/ace-connector/master/src/download-links/`,
+    base: `https://raw.githubusercontent.com/zardoy/ace-connector/main/src/download-links`,
     components: {
         installer: true,
         patchBrowserAds: true
@@ -65,18 +66,22 @@ class AceConnector extends events_1.EventEmitter {
         this.options = lodash_1.defaultsDeep(defaultOptions, userOptions);
     }
     static async getDownloadComponentUrl(component) {
-        return (await got_1.default(`${DOWNLOAD_ASSETS_CONFIG.base}/${component}`)).body.trim();
+        const url = `${DOWNLOAD_ASSETS_CONFIG.base}/${component}`;
+        debug("Getting component download url: " + url);
+        return (await got_1.default(url)).body.trim();
     }
     /**
      * Downloads Ace Stream
      * @param savePath Path to save executable file. It's recommended to use temp path
      */
     static async downloadAceStreamInstaller(savePath) {
+        debug("Starting AceStream download to " + savePath);
         const downloadUrl = await AceConnector.getDownloadComponentUrl("installer");
         await pipeline(got_1.default.stream(downloadUrl)
             .on("downloadProgress", progress => {
             console.log(progress.percent * 100 + "%");
         }), fs_1.default.createWriteStream(savePath));
+        debug("Download complete");
     }
     /**
      * Use this instead of `this.emit("updateStatus", ...)`;
@@ -93,21 +98,28 @@ class AceConnector extends events_1.EventEmitter {
      * Check wether Ace Engine is available on HTTP or not
      */
     async checkHttpConnection() {
+        debug("Starting http API check");
+        let statusCode;
         try {
             // todo-low response type
             // todo-high check with timeout
-            let { statusCode, body: data } = await got_1.default(`http://localhost:${this.httpApiPort}/webui/api/service?method=get_version`, {
+            let response = await got_1.default(`http://localhost:${this.httpApiPort}/webui/api/service?method=get_version`, {
                 responseType: "json"
             });
+            statusCode = response.statusCode;
+            const data = response.body;
             if (data.error)
                 throw new Error(data.error);
             this.updateStatus({
                 status: "connected",
                 version: data.result.version
             });
+            // todo-moderate Checking http connection <- group : result (red | lime)
+            debug("Check http connection success. Code: " + statusCode);
             return true;
         }
         catch (err) {
+            debug("Checking http error. Status code " + statusCode);
             this.updateStatus({ status: "disconnected" });
             return false;
         }
@@ -116,8 +128,8 @@ class AceConnector extends events_1.EventEmitter {
      * Fire it from `patchAvailable` event to patch AceStream
      */
     async patchAceStream() {
+        debug("Starting auto-patch");
         if (!this.engineExecutable) {
-            // engine isn't found
             return;
         }
         const patchConfig = AceConnector.filesToPatch[0];
@@ -145,6 +157,9 @@ class AceConnector extends events_1.EventEmitter {
         if (!fs_1.default.existsSync(savePath)) {
             await AceConnector.downloadAceStreamInstaller(savePath);
         }
+        else {
+            debug("Skipping installer downloading as it already downloaded: " + savePath);
+        }
         let preventAutoInstallation = false;
         this.emit("installerDownloaded", {
             handleLaunchManually: () => {
@@ -154,6 +169,9 @@ class AceConnector extends events_1.EventEmitter {
         });
         if (!preventAutoInstallation) {
             await installDownloadedAceStream();
+        }
+        else {
+            debug("Auto installation prevent. Waiting for ");
         }
         await events_2.once(this, "installComplete");
     }
@@ -175,24 +193,41 @@ class AceConnector extends events_1.EventEmitter {
             }
         }
     }
+    async getEnginePid() {
+        var _a;
+        // TODO-moderate FIX WEIRD RUSSIAN CHARACTERS 
+        // let runningProcesses = (await si.processes()).list;
+        // const aceEngineProcessFound = runningProcesses.find((process) => process.path === engineExecPath);
+        const processes = await ps_list_1.default();
+        return (_a = processes.find(process => {
+            return process.name === path_1.default.basename(this.engineExecutable.path);
+        })) === null || _a === void 0 ? void 0 : _a.pid.toString();
+    }
     async connectInternal() {
         // -- CHECKING WETHER ACE STREAM IS INSTALLED OR NOT
-        // REGISTRY VALUE
-        const engineExecPath = await (async () => {
+        // GET ACE STREAM ENGINE PATH
+        debug("connection start");
+        const { engineExecPath, source: pathSource } = await (async () => {
             if (this.options.aceEngineExecutablePath) {
-                return this.options.aceEngineExecutablePath;
+                return {
+                    source: "options",
+                    engineExecPath: this.options.aceEngineExecutablePath
+                };
             }
-            console.time("registry_read");
             const { keyValue: engineExecPath } = await winreg_wrapper_1.getRegistryKey("HKCU\\SOFTWARE\\AceStream\\EnginePath");
             if (!engineExecPath) {
                 throw new ConnectionError("ACE_ENGINE_NOT_INSTALLED", "Can't read registry value");
             }
-            console.timeEnd("registry_read");
-            return engineExecPath;
+            return {
+                engineExecPath,
+                source: "registry"
+            };
         })();
+        debug(`Successfuly get engine exec path from ${pathSource}: ${engineExecPath}`);
         if (!fs_1.default.existsSync(engineExecPath)) {
             throw new ConnectionError("ACE_ENGINE_NOT_INSTALLED", `Can't find ace engine from registry path: ${engineExecPath}`);
         }
+        debug("Engine exec exists");
         const engineDir = path_1.default.dirname(engineExecPath);
         this.engineExecutable = {
             path: engineExecPath,
@@ -209,15 +244,26 @@ class AceConnector extends events_1.EventEmitter {
                 this.portFileObserver = undefined;
             }
             // CREATING NEW ONE TO TRACK ACE ENGINE STATUS
+            debug("Starting observer");
             this.portFileObserver = fs_1.default.watch(engineDir, (eventName, filename) => {
+                var _a;
                 if (filename !== path_1.default.basename(enginePortFile))
                     return;
                 // note: if file just created, then "change" event will be emited
                 if (eventName === "change") {
+                    debug(`Port file touched. Checking connection`);
                     this.checkHttpConnection();
                 }
-                else if (!fs_1.default.existsSync(enginePortFile)) { // engine stopped
+                else if (!fs_1.default.existsSync(enginePortFile)) {
+                    debug(`Port file removed. Engine has stopped`);
                     this.updateStatus({ status: "disconnected" });
+                    if ((_a = this.options.autoStart) === null || _a === void 0 ? void 0 : _a.onSuspend) {
+                        debug(`options.autoStart.onSuspend set to true, restarting engine...`);
+                        void (async () => {
+                            await new Promise(resolve => setTimeout(resolve, 5000));
+                            void this.connect();
+                        })();
+                    }
                 }
             });
         })();
@@ -225,6 +271,7 @@ class AceConnector extends events_1.EventEmitter {
         const skipEngineStartFromPatch = await (async () => {
             if (!this.options.checkForPatch)
                 return;
+            debug("Checking for patches");
             const patchNeededResults = await Promise.all(AceConnector.filesToPatch.map(fileToPatch => 
             // it returns Promise, not function
             (async () => {
@@ -239,17 +286,25 @@ class AceConnector extends events_1.EventEmitter {
                 }
             })()));
             const patchNeeded = patchNeededResults.includes(true);
-            if (!patchNeeded)
+            if (!patchNeeded) {
+                debug("No patches needed");
                 return;
+            }
+            ;
+            debug("Patches available. Starting auto-patch");
             this.emit("patchAvailable");
             await this.patchAceStream();
+            debug("Patched successfully");
         })();
         // -- CONNECT ENGINE
         await (async () => {
-            const startAceEngine = async () => {
-                if (this.options.autoStart && this.options.autoStart.onConnect) {
+            const startEngine = async () => {
+                var _a;
+                if ((_a = this.options.autoStart) === null || _a === void 0 ? void 0 : _a.onConnect) {
                     //todo implement retries
-                    const { stderr, stdout } = await execFilePromise(engineExecPath);
+                    debug("Starting engine");
+                    await open_1.default(engineExecPath);
+                    debug("Engine should be started");
                     // throw new ConnectionError("ACE_ENGINE_RUN_FAIL", `Can't open ace engine executable (${aceEngineExecPath}). You can try to open it manually.`);
                 }
                 else {
@@ -257,30 +312,43 @@ class AceConnector extends events_1.EventEmitter {
                 }
             };
             // if engine port doesn't exist - it 100% need to be started
+            // todo-moderate rewrite with double-check
             if (!fs_1.default.existsSync(enginePortFile)) {
-                await startAceEngine();
+                debug("Port file doesn't exist");
+                await startEngine();
             }
             else {
+                debug("Port file exists. Searching for engine in process list");
                 // but sometimes ace port file exists even if engine wasn't started so we need additional check 
-                // FINDING ENGINE PROCESS
-                // TODO-moderate FIX WEIRD RUSSIAN CHARACTERS 
-                // let runningProcesses = (await si.processes()).list;
-                // const aceEngineProcessFound = runningProcesses.find((process) => process.path === engineExecPath);
-                const processes = await ps_list_1.default();
-                const engineProcess = processes.find(process => {
-                    return process.name === path_1.default.basename(this.engineExecutable.path);
-                });
-                if (engineProcess) {
-                    // ASSUMED THAT ACE ENGINE WILL FIX PORT FILE
-                    // todo-moderate review
-                    await cross_port_killer_1.killer.killByPid(engineProcess.pid.toString());
-                    // if (!await this.checkHttpConnection()) {
-                    //     // todo: kill process and start again
-                    // }
+                const enginePid = await this.getEnginePid();
+                if (enginePid) {
+                    debug("Engine process found");
+                    const apiAvailable = this.checkHttpConnection();
+                    if (!apiAvailable) {
+                        debug("Api seems to be unavailable. Killing engine process");
+                        await cross_port_killer_1.killer.killByPid(enginePid);
+                        await startEngine();
+                    }
                 }
-                await startAceEngine();
+                else {
+                    debug("Can't find engine process");
+                    await startEngine();
+                }
             }
         })();
+    }
+    async disconnect() {
+        const enginePid = await this.getEnginePid();
+        if (enginePid) {
+            await cross_port_killer_1.killer.killByPid(enginePid);
+            if (this.portFileObserver) {
+                this.portFileObserver.close();
+                this.portFileObserver = undefined;
+            }
+            this.updateStatus({ status: "disconnected" });
+            return true;
+        }
+        return false;
     }
     execute() {
         // execute methods on Ace Stream Engine

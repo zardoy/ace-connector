@@ -17,9 +17,9 @@ export declare class ConnectionError extends Error {
 }
 export interface AceConnectorOptions {
     /**
-     * Setting this to false will prevent watching port file
+     * Set this to null to prevent watching port file
      */
-    autoStart: false | {
+    autoStart: null | {
         /**
          * If `true` start engine on `connect()` if it's not started yet
          */
@@ -150,7 +150,9 @@ export declare class AceConnector extends AceConnector_base {
      */
     installAceStream(savePath: string): Promise<void>;
     connect(): Promise<void>;
+    private getEnginePid;
     private connectInternal;
+    disconnect(): Promise<boolean>;
     execute(): void;
 }
 export {};
