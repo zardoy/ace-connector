@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      - uses: |-
+      - run: |-
           yarn install --frozen-lockfile
           yarn prepublishOnly
       - uses: peaceiris/actions-gh-pages@v3
