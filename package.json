@@ -1,11 +1,15 @@
 {
   "name": "ace-connector",
   "version": "1.0.0",
-  "main": "dist/index.js",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
   "repository": "git@github.com:zardoy/ace-connector.git",
   "author": "Vitaly Turovsky <vital2580@icloud.com>",
   "license": "MIT",
   "private": true,
+  "scripts": {
+    "prepublishOnly": "tsc"
+  },
   "dependencies": {
     "ace-connector": "./src/",
     "cross-port-killer": "^1.3.0",
