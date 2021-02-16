@@ -6,6 +6,7 @@ export const aceConnector = new AceConnector();
 
 (async () => {
     await aceConnector.connect();
+    console.log("Ace Stream installed!");
 })()
     .catch(err => { throw err; });
 
