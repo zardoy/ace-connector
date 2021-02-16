@@ -493,6 +493,11 @@ export class AceConnector extends (EventEmitter as new () => TypedEmitter<AceCon
         const enginePid = await this.getEnginePid();
         if (enginePid) {
             await killer.killByPid(enginePid);
+            if (this.portFileObserver) {
+                this.portFileObserver.close();
+                this.portFileObserver = undefined;
+            }
+            this.updateStatus({ status: "disconnected" });
             return true;
         }
         return false;
