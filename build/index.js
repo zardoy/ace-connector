@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.AceConnector = exports.ConnectionError = void 0;
+exports.AceConnector = exports.defaultOptions = exports.ConnectionError = void 0;
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const events_1 = require("events");
@@ -39,7 +39,7 @@ class ConnectionError extends Error {
     }
 }
 exports.ConnectionError = ConnectionError;
-const defaultOptions = {
+exports.defaultOptions = {
     autoStart: {
         onConnect: true,
         onSuspend: true,
@@ -63,7 +63,7 @@ class AceConnector extends events_1.EventEmitter {
         this.httpApiPort = 6878;
         if (process.platform !== "win32")
             throw new Error("Only Windows platform is supported.");
-        this.options = lodash_1.defaultsDeep(defaultOptions, userOptions);
+        this.options = lodash_1.defaultsDeep(exports.defaultOptions, userOptions);
     }
     static async getDownloadComponentUrl(component) {
         const url = `${DOWNLOAD_ASSETS_CONFIG.base}/${component}`;

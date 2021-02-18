@@ -8,8 +8,8 @@ declare const DOWNLOAD_ASSETS_CONFIG: {
     };
 };
 declare type DownloadableComponent = keyof typeof DOWNLOAD_ASSETS_CONFIG["components"];
-declare type ConnectionErrorType = "ACE_ENGINE_NOT_INSTALLED" | "ACE_ENGINE_READ_PORT_ERROR" | "ACE_ENGINE_RUN_FAIL" | "ACE_ENGINE_NOT_STARTED";
-declare type EngineConnectionStatus = "checking" | "disconnected" | "starting" | "connected";
+export declare type ConnectionErrorType = "ACE_ENGINE_NOT_INSTALLED" | "ACE_ENGINE_READ_PORT_ERROR" | "ACE_ENGINE_RUN_FAIL" | "ACE_ENGINE_NOT_STARTED";
+export declare type EngineConnectionStatus = "checking" | "disconnected" | "starting" | "connected";
 export declare class ConnectionError extends Error {
     type: ConnectionErrorType;
     reason: string;
@@ -61,7 +61,7 @@ export interface AceConnectorOptions {
      */
     autoInstall: boolean;
 }
-declare const defaultOptions: AceConnectorOptions;
+export declare const defaultOptions: AceConnectorOptions;
 declare type InstallerDownloadedEvent = {
     /**
      * Call it to prevent auto-installation. Must be called instantly.
@@ -95,7 +95,7 @@ export declare type AceConnectorEvents = {
      */
     installError(step: "download" | "execute"): void;
 };
-declare type EngineStatus = {
+export declare type EngineStatus = {
     status: Exclude<EngineConnectionStatus, "connected">;
 } | {
     status: Extract<EngineConnectionStatus, "connected">;
