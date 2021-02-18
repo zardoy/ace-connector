@@ -32,9 +32,9 @@ const DOWNLOAD_ASSETS_CONFIG = {
 };
 type DownloadableComponent = keyof typeof DOWNLOAD_ASSETS_CONFIG["components"];
 
-type ConnectionErrorType = "ACE_ENGINE_NOT_INSTALLED" | "ACE_ENGINE_READ_PORT_ERROR" | "ACE_ENGINE_RUN_FAIL" | "ACE_ENGINE_NOT_STARTED";
+export type ConnectionErrorType = "ACE_ENGINE_NOT_INSTALLED" | "ACE_ENGINE_READ_PORT_ERROR" | "ACE_ENGINE_RUN_FAIL" | "ACE_ENGINE_NOT_STARTED";
 
-type EngineConnectionStatus = "checking" | "disconnected" | "starting" | "connected";
+export type EngineConnectionStatus = "checking" | "disconnected" | "starting" | "connected";
 
 
 export class ConnectionError extends Error {
@@ -92,7 +92,7 @@ export interface AceConnectorOptions {
     autoInstall: boolean;
 }
 
-const defaultOptions: AceConnectorOptions = {
+export const defaultOptions: AceConnectorOptions = {
     autoStart: {
         onConnect: true,
         onSuspend: true,
@@ -147,7 +147,7 @@ export type AceConnectorEvents = {
     installError(step: "download" | "execute"): void;
 };
 
-type EngineStatus = {
+export type EngineStatus = {
     status: Exclude<EngineConnectionStatus, "connected">;
 } | {
     status: Extract<EngineConnectionStatus, "connected">;
